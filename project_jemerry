@@ -1,0 +1,154 @@
+import numpy as np
+import openpyxl
+from PIL import Image, ImageOps, ImageFilter
+from paddleocr import PaddleOCR
+import cv2
+
+def preprocess_image(image):
+    # 转为灰度图像
+    gray_img = image.convert('L')
+    gray_img.save('gray_image.png')
+
+    # 自动对比度调整
+    binarized_img = ImageOps.autocontrast(gray_img)
+    binarized_img.save('binarized_image.png')
+
+    return binarized_img
+
+
+def detect_table_structure(image):
+    img_array = np.array(image.convert('RGB'))  # 确保图像为 RGB 格式
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 100, minLineLength=100, maxLineGap=10)
+
+    row_lines = []
+    col_lines = []
+
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            if abs(y2 - y1) < abs(x2 - x1):
+                col_lines.append(x1)  # 假设这些是列线
+            else:
+                row_lines.append(y1)  # 假设这些是行线
+
+    return row_lines, col_lines
+
+
+def get_box_coords(box):
+    try:
+        if isinstance(box, list) and len(box) == 4:
+            box = np.array(box)
+            x_coords = box[:, 0]
+            y_coords = box[:, 1]
+            return min(x_coords), min(y_coords), max(x_coords), max(y_coords)
+        else:
+            print(f"意外的 box 格式：{box}")
+            return (0, 0, 0, 0)
+    except Exception as e:
+        print(f"处理 box 坐标时出错：{e}")
+        return (0, 0, 0, 0)
+
+def classify_text_boxes(text_boxes, row_lines, col_lines):
+    classified_boxes = []
+    for text, box in text_boxes:
+        x_min, y_min, x_max, y_max = get_box_coords(box)
+        row = find_closest_line(y_min, row_lines)
+        col = find_closest_line(x_min, col_lines)
+        classified_boxes.append((row, col, text))
+    return classified_boxes
+
+def find_closest_line(position, lines):
+    if not lines:
+        return 0
+    lines = sorted(lines)
+    closest_line = min(lines, key=lambda x: abs(x - position))
+    return closest_line
+
+
+def find_closest_line(position, lines):
+    if not lines:
+        return 0
+    lines = sorted(lines)
+    closest_line = min(lines, key=lambda x: abs(x - position))
+    return closest_line
+
+def rebuild_table(classified_boxes):
+    if not classified_boxes:
+        return []
+
+    max_row = max(row for row, col, text in classified_boxes)
+    max_col = max(col for row, col, text in classified_boxes)
+
+    table = [['' for _ in range(max_col + 1)] for _ in range(max_row + 1)]
+
+    for row, col, text in classified_boxes:
+        table[row][col] = text
+
+    return table
+
+def extract_table_from_image(image_path):
+    ocr = PaddleOCR(use_angle_cls=True, lang='ch')
+    try:
+        img = Image.open(image_path)
+        img = preprocess_image(img)
+    except FileNotFoundError:
+        print(f"错误：文件 {image_path} 不存在。")
+        return []
+    except Exception as e:
+        print(f"打开图像时出错：{e}")
+        return []
+
+    print("图像成功加载和预处理。")  # 调试信息
+
+    img_array = np.array(img.convert('RGB'))
+    try:
+        results = ocr.ocr(img_array, cls=True)
+    except Exception as e:
+        print(f"OCR 处理时出错：{e}")
+        return []
+
+    print(f"OCR 结果：{results}")  # 调试信息
+
+    text_boxes = []
+    for result in results:
+        for line in result:
+            _, (text, box) = line
+            text_boxes.append((text, box))
+
+    print(f"检测到的文本框：{text_boxes}")  # 调试信息
+
+    row_lines, col_lines = detect_table_structure(img)
+    print(f"检测到的行线：{row_lines}, 列线：{col_lines}")  # 调试信息
+
+    classified_boxes = classify_text_boxes(text_boxes, row_lines, col_lines)
+    print(f"分类后的文本框：{classified_boxes}")  # 调试信息
+
+    table_data = rebuild_table(classified_boxes)
+    print(f"重建的表格数据：{table_data}")  # 调试信息
+    return table_data
+
+
+def save_to_excel(table_data, excel_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for row_idx, row_data in enumerate(table_data):
+        for col_idx, cell_data in enumerate(row_data):
+            ws.cell(row=row_idx + 1, column=col_idx + 1, value=cell_data)
+    wb.save(excel_path)
+
+def main():
+    image_path = "C:\\Users\\30493\\Desktop\\d.png"
+    table_data = extract_table_from_image(image_path)
+
+    if table_data:
+        print(f"提取的表格数据：{table_data}")  # 调试信息
+        save_to_excel(table_data, 'table_data.xlsx')
+    else:
+        print("未提取到表格数据。")
+
+
+
+if __name__ == '__main__':
+    main()
